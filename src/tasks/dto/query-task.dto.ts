@@ -1,50 +1,18 @@
-import { Transform, Type } from 'class-transformer';
-import {
-  IsBoolean,
-  IsInt,
-  IsOptional,
-  IsPositive,
-  IsString,
-  Max,
-  Min,
-} from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsInt, Max, Min } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class QueryTasksDto {
+  @ApiPropertyOptional({ example: 1, description: 'Page number (1-based)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   page = 1;
 
+  @ApiPropertyOptional({ example: 10, description: 'Page size (max 100)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
   limit = 10;
-
-  @IsOptional()
-  @IsBoolean()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') return value === 'true' || value === '1';
-    return Boolean(value);
-  })
-  isCompleted?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  @Transform(({ value }) => {
-    if (typeof value === 'string') return value === 'true' || value === '1';
-    return Boolean(value);
-  })
-  isPublic?: boolean;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @IsPositive()
-  responsibleId?: number;
-
-  @IsOptional()
-  @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  search?: string;
 }

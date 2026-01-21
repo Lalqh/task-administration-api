@@ -12,26 +12,26 @@ import { UpdateTaskDto } from './dto/update-task.dto';
 import { QueryTasksDto } from './dto/query-task.dto';
 import { User } from 'src/users/user.entity';
 import { Tag } from './entities/tag.entity';
+import { TaskLog } from 'src/task-logs/entities/task-log.entity';
 
 @Injectable()
 export class TasksService {
   constructor(
-    @InjectRepository(Task)
-    private readonly taskRepo: Repository<Task>,
-    @InjectRepository(User)
-    private readonly userRepo: Repository<User>,
-    @InjectRepository(Tag)
-    private readonly tagRepo: Repository<Tag>,
+    @InjectRepository(Task) private readonly taskRepository: Repository<Task>,
+    @InjectRepository(User) private readonly userRepository: Repository<User>,
+    @InjectRepository(Tag) private readonly tagRepository: Repository<Tag>,
+    @InjectRepository(TaskLog)
+    private readonly taskLogRepo: Repository<TaskLog>,
   ) {}
 
-  async create(dto: CreateTaskDto): Promise<Task> {
+  async create(dto: CreateTaskDto, userId: number): Promise<Task> {
     try {
       const { responsibleId, tagNames, ...data } = dto;
 
-      const task = this.taskRepo.create(data);
+      const task = this.taskRepository.create(data);
 
       if (responsibleId) {
-        const user = await this.userRepo.findOne({
+        const user = await this.userRepository.findOne({
           where: { id: responsibleId },
         });
         if (!user)
@@ -46,65 +46,71 @@ export class TasksService {
           new Set(tagNames.map((n) => n.trim()).filter((n) => n.length)),
         );
 
-        const existing = await this.tagRepo.findBy({ name: In(normalized) });
+        const existing = await this.tagRepository.findBy({
+          name: In(normalized),
+        });
         const existingNames = new Set(existing.map((t) => t.name));
         const toCreate = normalized
           .filter((n) => !existingNames.has(n))
-          .map((name) => this.tagRepo.create({ name }));
-
+          .map((name) => this.tagRepository.create({ name }));
         let created: Tag[] = [];
         if (toCreate.length) {
-          created = await this.tagRepo.save(toCreate);
+          created = await this.tagRepository.save(toCreate);
         }
 
         task.tags = [...existing, ...created];
       }
 
-      return await this.taskRepo.save(task);
+      const saved = await this.taskRepository.save(task);
+      await this.taskLogRepo.save(
+        this.taskLogRepo.create({
+          action: 'create',
+          entity: 'task',
+          entityId: saved.id,
+          userId,
+          description: 'Task created',
+        }),
+      );
+
+      return saved;
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
       throw new InternalServerErrorException('Error al crear la tarea');
     }
   }
 
-  async findAll(query: QueryTasksDto): Promise<{
+  async findAll(
+    query: QueryTasksDto,
+    userId?: number,
+  ): Promise<{
     items: Task[];
     meta: { total: number; page: number; limit: number; totalPages: number };
   }> {
     const {
       page = 1,
       limit = 10,
-      isCompleted,
-      isPublic,
-      responsibleId,
-      search,
     } = query;
 
-    const qb = this.taskRepo
+    const qb = this.taskRepository
       .createQueryBuilder('task')
       .leftJoinAndSelect('task.responsible', 'responsible')
-      .leftJoinAndSelect('task.tags', 'tags');
-
-    if (typeof isCompleted === 'boolean') {
-      qb.andWhere('task.isCompleted = :isCompleted', { isCompleted });
-    }
-
-    if (typeof isPublic === 'boolean') {
-      qb.andWhere('task.isPublic = :isPublic', { isPublic });
-    }
-
-    if (responsibleId) {
-      qb.andWhere('responsible.id = :responsibleId', { responsibleId });
-    }
-
-    if (search?.trim()) {
-      const s = search.trim().toLowerCase();
-      qb.andWhere(
-        '(LOWER(task.title) LIKE :search OR LOWER(task.description) LIKE :search)',
+      .leftJoinAndSelect('task.tags', 'tags')
+      .leftJoin(
+        TaskLog,
+        'log',
+        'log.entity = :entity AND log.action = :action AND log.entityId = task.id',
         {
-          search: `%${s}%`,
+          entity: 'task',
+          action: 'create',
         },
-      );
+      )
+      .where('task.deletedAt IS NULL')
+      .distinct(true);
+
+    if (userId) {
+      qb.andWhere('(task.isPublic = TRUE OR log.userId = :userId)', { userId });
+    } else {
+      qb.andWhere('task.isPublic = TRUE');
     }
 
     qb.orderBy('task.id', 'DESC')
@@ -127,17 +133,24 @@ export class TasksService {
     }
   }
 
-  async findOne(id: number): Promise<Task> {
-    const task = await this.taskRepo.findOne({
+  async findOne(id: number, userId: number): Promise<Task> {
+    const task = await this.taskRepository.findOne({
       where: { id },
       relations: ['responsible', 'tags'],
     });
     if (!task) throw new NotFoundException('Tarea no encontrada');
+
+    if (!task.isPublic) {
+      const owns = await this.taskLogRepo.exists({
+        where: { entity: 'task', action: 'create', entityId: id, userId },
+      });
+      if (!owns) throw new NotFoundException('Tarea no encontrada');
+    }
     return task;
   }
 
-  async update(id: number, dto: UpdateTaskDto): Promise<Task> {
-    const task = await this.taskRepo.findOne({
+  async update(id: number, dto: UpdateTaskDto, userId: number): Promise<Task> {
+    const task = await this.taskRepository.findOne({
       where: { id },
       relations: ['responsible', 'tags'],
     });
@@ -149,7 +162,7 @@ export class TasksService {
       Object.assign(task, data);
 
       if (typeof responsibleId !== 'undefined') {
-        const user = await this.userRepo.findOne({
+        const user = await this.userRepository.findOne({
           where: { id: responsibleId },
         });
         if (!user)
@@ -165,35 +178,54 @@ export class TasksService {
         );
 
         const existing = normalized.length
-          ? await this.tagRepo.findBy({ name: In(normalized) })
+          ? await this.tagRepository.findBy({ name: In(normalized) })
           : [];
 
         const existingNames = new Set(existing.map((t) => t.name));
         const toCreate = normalized
           .filter((n) => !existingNames.has(n))
-          .map((name) => this.tagRepo.create({ name }));
+          .map((name) => this.tagRepository.create({ name }));
 
         let created: Tag[] = [];
         if (toCreate.length) {
-          created = await this.tagRepo.save(toCreate);
+          created = await this.tagRepository.save(toCreate);
         }
 
         task.tags = [...existing, ...created];
       }
 
-      return await this.taskRepo.save(task);
+      const saved = await this.taskRepository.save(task);
+      await this.taskLogRepo.save(
+        this.taskLogRepo.create({
+          action: 'update',
+          entity: 'task',
+          entityId: saved.id,
+          userId,
+          description: 'Task updated',
+        }),
+      );
+      return saved;
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
       throw new InternalServerErrorException('Error al actualizar la tarea');
     }
   }
 
-  async remove(id: number): Promise<{ deleted: boolean }> {
-    const exists = await this.taskRepo.findOne({ where: { id } });
+  async remove(id: number, userId: number): Promise<{ deleted: boolean }> {
+    const exists = await this.taskRepository.findOne({ where: { id } });
     if (!exists) throw new NotFoundException('Tarea no encontrada');
 
     try {
-      await this.taskRepo.delete(id);
+      await this.taskRepository.softDelete(id);
+      await this.taskLogRepo.save(
+        this.taskLogRepo.create({
+          action: 'delete',
+          entity: 'task',
+          entityId: id,
+          description: 'Task deleted',
+          userId,
+        }),
+      );
       return { deleted: true };
     } catch {
       throw new InternalServerErrorException('Error al eliminar la tarea');
