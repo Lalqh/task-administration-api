@@ -24,6 +24,13 @@ export class TasksService {
     private readonly taskLogRepo: Repository<TaskLog>,
   ) {}
 
+  private async isOwner(taskId: number, userId: number): Promise<boolean> {
+    if (!userId || userId <= 0) return false;
+    return this.taskLogRepo.exists({
+      where: { entity: 'task', action: 'create', entityId: taskId, userId },
+    });
+  }
+
   async create(dto: CreateTaskDto, userId: number): Promise<Task> {
     try {
       const { responsibleId, tagNames, ...data } = dto;
@@ -86,10 +93,7 @@ export class TasksService {
     items: Task[];
     meta: { total: number; page: number; limit: number; totalPages: number };
   }> {
-    const {
-      page = 1,
-      limit = 10,
-    } = query;
+    const { page = 1, limit = 10 } = query;
 
     const qb = this.taskRepository
       .createQueryBuilder('task')
@@ -107,11 +111,11 @@ export class TasksService {
       .where('task.deletedAt IS NULL')
       .distinct(true);
 
-    if (userId) {
-      qb.andWhere('(task.isPublic = TRUE OR log.userId = :userId)', { userId });
-    } else {
-      qb.andWhere('task.isPublic = TRUE');
-    }
+    userId
+      ? qb.andWhere('(task.isPublic = TRUE OR log.userId = :userId)', {
+          userId,
+        })
+      : qb.andWhere('task.isPublic = TRUE');
 
     qb.orderBy('task.id', 'DESC')
       .skip((page - 1) * limit)
@@ -141,9 +145,7 @@ export class TasksService {
     if (!task) throw new NotFoundException('Tarea no encontrada');
 
     if (!task.isPublic) {
-      const owns = await this.taskLogRepo.exists({
-        where: { entity: 'task', action: 'create', entityId: id, userId },
-      });
+      const owns = await this.isOwner(id, userId);
       if (!owns) throw new NotFoundException('Tarea no encontrada');
     }
     return task;
@@ -155,7 +157,10 @@ export class TasksService {
       relations: ['responsible', 'tags'],
     });
     if (!task) throw new NotFoundException('Tarea no encontrada');
-
+    if (!task.isPublic) {
+      const owns = await this.isOwner(id, userId);
+      if (!owns) throw new NotFoundException('Tarea no encontrada');
+    }
     try {
       const { responsibleId, tagNames, ...data } = dto;
 
@@ -214,6 +219,10 @@ export class TasksService {
   async remove(id: number, userId: number): Promise<{ deleted: boolean }> {
     const exists = await this.taskRepository.findOne({ where: { id } });
     if (!exists) throw new NotFoundException('Tarea no encontrada');
+    if (!exists.isPublic) {
+      const owns = await this.isOwner(id, userId);
+      if (!owns) throw new NotFoundException('Tarea no encontrada');
+    }
 
     try {
       await this.taskRepository.softDelete(id);
