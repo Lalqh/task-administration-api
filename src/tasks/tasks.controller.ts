@@ -137,6 +137,7 @@ export class TasksController {
   @Public()
   @ApiOperation({ summary: 'Delete a task' })
   @ApiIdParam()
+  @ApiAuthHeader()
   @ApiNoContentResponse({ description: 'Task deleted' })
   @ApiNotFound('Task not found')
   @HttpCode(204)
