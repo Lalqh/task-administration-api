@@ -1,4 +1,9 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
@@ -15,7 +20,6 @@ export class HeaderUserGuard implements CanActivate {
 
     const raw = req.headers['x-user-id'];
 
-   
     if (raw) {
       const id = Number(raw);
       if (!Number.isInteger(id) || id <= 0) {
@@ -25,7 +29,6 @@ export class HeaderUserGuard implements CanActivate {
       return true;
     }
 
-    
     if (isPublic) return true;
 
     throw new UnauthorizedException('Falta el header x-user-id');
